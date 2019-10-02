@@ -17,6 +17,7 @@ import math
 import h5py
 import pickle
 import csv
+import pandas as pd
 from sklearn.model_selection import KFold
 
 
@@ -255,6 +256,7 @@ class ROI_Sampler:
             assert os.path.exists(roi_size_csv), "ROI size csv file do not exist"
             self.dict_roi_size = preprocess_roi_size_csv(roi_size_csv)
         self.bboxes = self.dict_bbox[caseID]
+        self.caseID = caseID
         self.wsi_size = self.dict_roi_size[caseID]
         self.wsi_path = wsi_path
         self.window_size = window_size
@@ -265,6 +267,7 @@ class ROI_Sampler:
         self.pos_count = None
         self.neg_count = None
         self.outdir = outdir
+        #self.negdir = os.path.join(self.outdir, 'neg')
 
     def sample_pos(self):
         self.negdir = os.path.join(self.outdir, 'neg')
@@ -273,19 +276,23 @@ class ROI_Sampler:
         if not os.path.exists(self.posdir): os.mkdir(self.posdir)
         self.bags, self.pos_bags, self.count = self._sample_from_ROI_mat(self.roi_mat)
         self.pos_count, self.neg_count = self.count
+        self.neg_count = self.pos_count - self.neg_count
+
+        print("positive samples from " + str(self.caseID) + ' :' + str
+            (self.pos_count))
 
 
     def sample_neg(self, neg_count=None, mode=None):
         mode_type = ['rand', 'relevant']
         assert mode in mode_type, "Enter valid mode type"
+        bags = Bag(h=self.wsi_size[0], w=self.wsi_size[1],
+                   size=self.window_size, overlap_pixel=self.overlap,
+                   padded=False)
 
         if not neg_count:
             neg_count = self.neg_count
             assert self.neg_count is not None, "Need to run sample_pos first"
         if mode == 'rand':
-            bags = Bag(h=self.WSI_size[0], w=self.WSI_size,
-                       size=self.window_size, overlap_pixel=self.overlap,
-                       padded=False)
             self.neg_bags = self._sample_negative_samples_rand(neg_count,
                                                                 self.bboxes,
                                                                 bags)
@@ -293,14 +300,16 @@ class ROI_Sampler:
             pos_ind = self._bbox_to_bags_ind_in_wsi(self.bboxes, self.wsi_size,
                                                      self.window_size,
                                                      self.overlap)
-            self.neg_bags = self._sample_negative_samples_relevant(neg_count,
-                                                                  WSI_size, pos_ind,
-                                                                  window_size, overlap)
+
+            self.neg_bags = self._sample_negative_samples_relevant(neg_count, self.wsi_size, pos_ind, self.window_size, self.overlap)
+
+            print(self.neg_bags)
+
             if self.wsi_path is not None:
                 # need to crop roi and save in negdir
                 for ind in self.neg_bags:
                     bbox = bags.bound_box(ind)
-                    outname=str(caseID) + '_' + str(ind) + '.tif'
+                    outname=str(self.caseID) + '_' + str(ind) + '.tif'
                     outname = os.path.join(self.negdir, outname)
                     crop_bbox_single(self.wsi_path, bbox, outname)
 
@@ -319,10 +328,12 @@ class ROI_Sampler:
             if np.sum(M[bbox[0]:bbox[1], bbox[2]:bbox[3]]) / size >= 0.7:
                 result[i] = 1
                 pos_count += 1
-                cv2.imwrite(os.path.join(self.posdir, str(pos_count) + '.tif'), bag)
+                cv2.imwrite(os.path.join(self.posdir, str(self.caseID) + '_' +
+                   str(pos_count) + '.tif'), bag)
             else:
                 neg_count += 1
-                cv2.imwrite(os.path.join(self.negdir, str(neg_count) + '.tif'), bag)
+                cv2.imwrite(os.path.join(self.negdir, str(self.caseID) + '_'
+                    + str(neg_count) + '.tif'), bag)
 
         return bags, result, [pos_count, neg_count]
 
@@ -399,10 +410,11 @@ class ROI_Sampler:
                                                 length)
             count_left -= len(neigh)
             result.update(neigh)
-            roi_bags += neigh
-            i += 1
+            roi_bags = np.concatenate([roi_bags, neigh])
+            #roi_bags.extend(neigh)
+            i += len(neigh)
             assert i < len(roi_bags), "ROI too big, not enough negative sample"
-
+        print(result)
         return list(result)
 
 
@@ -420,7 +432,7 @@ class ROI_Sampler:
             result += [idx - num_bag_w]
         if self._checkROI(idx + num_bag_w, length, roi_bags):
             result += [idx + num_bag_w]
-        return result, scanned
+        return result
 
 
 

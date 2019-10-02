@@ -6,15 +6,6 @@ Created on Mon May 20 01:05:00 2019
 @author: wuwenjun
 """
 from argparse import ArgumentParser
-import cv2
-import numpy as np
-from feature import calculate_feature, get_histogram
-from cluster import *
-import os
-import pickle
-import glob
-from util import *
-from classifier import *
 
 
 
@@ -27,7 +18,10 @@ if __name__ == '__main__':
                         nargs='?',
                         choices=['feature', 'kmeans', 'kmeans_visual', 'classifier_train', 'classifier_test'],
                         help='Choose mode from k-means clustering, visualization and classification_training, classification_testing')
-    parser.add_argument('--trained_cluster', default=None, help='Previously trained kmeans clusters')
+    parser.add_argument('--trained_kmeans_cluster', default=None,
+       help='Previously trained kmeans clusters')
+    parser.add_argument('--trained_hclusters', default=None,
+        )
     parser.add_argument('--single_image', default=None, help='Input image path')
     parser.add_argument('--image_folder', default=None, help='Input image batch folder' )
     parser.add_argument('--image_format', required=True, default='.jpg', choices=['.jpg', '.png', '.tif', '.mat'],help='Input format')
@@ -46,6 +40,7 @@ if __name__ == '__main__':
     parser.add_argument('--trained_model', default=None, help='previously trained model path')
     parser.add_argument('--lr', default=0.001, help='initial learning rate')
     parser.add_argument('--learning_rate', default='optimal', help='https://scikit-learn.org/0.15/modules/generated/sklearn.linear_model.SGDClassifier.html#sklearn.linear_model.SGDClassifier')
+    parser.add_argument('--help')
     args = parser.parse_args()
 
     mode = args.mode
@@ -62,6 +57,16 @@ if __name__ == '__main__':
     overlap = args.overlap_bag
     clf_filename = args.trained_model
     kmeans = args.trained_cluster
+
+    import cv2
+    import numpy as np
+    from feature import calculate_feature, get_histogram
+    from cluster import *
+    import os
+    import pickle
+    import glob
+    from util import *
+    from classifier import *
 
     if mode == 'kmeans':
 
@@ -172,24 +177,62 @@ if __name__ == '__main__':
             clf = model_update(clf, bag_feat, label_bags)
             model_save(clf, clf_filename)
         elif foler_path is not None:
+            assert ext == '.mat', "must provide .mat file for training"
             print('-------Running Batch Job-------')
-            # Feature computation and K-Means clustering in batch
 
-            im_list = glob.glob(os.path.join(folder_path, "*.jpg")) + glob.glob(os.path.join(folder_path, "*.png")) + glob.glob(os.path.join(folder_path, "*.tif"))
+            im_list = sorted(glob.glob(os.path.join(folder_path, '*' + ext)), key=os.path.getsize)
+            dict_bbox = preprocess_roi_csv(csv_file)
+
             count = 0
+            print('# of images: %r' %(len(im_list)))
+
             for im_p in im_list:
-                print('# of images: %r' %(len(im_list)))
-                if count % 10 == 0: print('Processed %r / %r' %(count, len(im_list)))
+                if count % 5 == 0: print('Processed %r / %r' %(count, len(im_list)))
                 count += 1
                 # get filename without extension
-                base = os.path.basename(image_path)
+                base = os.path.basename(im_p)
                 path_noextend = os.path.splitext(base)[0]
-                caseID = int(path_noextend.split('_')[0][1:])
-                print('CaseID: {}'.format(caseID))
 
-                dict_bbox = preprocess_roi_csv(csv_file)
-                assert dict_bbox.get(caseID) is not None, "case ID does not exist: check image name convention"
+                caseID = int(''.join(filter(str.isdigit, path_noextend.split('_')[0])))
                 feat_outpath = os.path.join(save_path, path_noextend + '_feat_bag.pkl')
-                bag_feat, bags = get_hist_from_image(image_path, loaded_kmeans, dict_size, word_size, bag_size,
-                                                    overlap, save_flag, feat_outpath)
+
+                pos_bags, labels_roi, [pos_count, neg_count] =
+                sample_from_roi_mat
+                (im_p)
+
+                if pos_count > neg_count:
+                    bags, negative_bags_ind, sample_negative_samples
+                    (pos_count-neg_count, bboxes, bags)
+
+
+
+                bag_feat, bags = get_hist_from_image(bags,
+                   loaded_kmeans, loaded_hcluster, dict_size, word_size,
+                   feat_outpath)
+
+
+
+
+
+            # Feature computation and K-Means clustering in batch
+
+            # im_list = glob.glob(os.path.join(folder_path, "*.jpg")) + glob.glob(os.path.join(folder_path, "*.png")) + glob.glob(os.path.join(folder_path, "*.tif"))
+            # count = 0
+            # for im_p in im_list:
+            #     print('# of images: %r' %(len(im_list)))
+            #     if count % 10 == 0: print('Processed %r / %r' %(count, len(im_list)))
+            #     count += 1
+            #     # get filename without extension
+            #     base = os.path.basename(image_path)
+            #     path_noextend = os.path.splitext(base)[0]
+            #     caseID = int(path_noextend.split('_')[0][1:])
+            #     print('CaseID: {}'.format(caseID))
+
+            #     dict_bbox = preprocess_roi_csv(csv_file)
+            #     assert dict_bbox.get(caseID) is not None, "case ID does not exist: check image name convention"
+            #     feat_outpath = os.path.join(save_path, path_noextend + '_feat_bag.pkl')
+            #     bag_feat, bags = get_hist_from_image(image_path, loaded_kmeans, dict_size, word_size, bag_size,
+            #                                         overlap, save_flag, feat_outpath)
+
+
 
