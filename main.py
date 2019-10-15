@@ -16,14 +16,17 @@ if __name__ == '__main__':
                         default='kmeans',
                         const='kmeans',
                         nargs='?',
-                        choices=['feature', 'kmeans', 'kmeans_visual', 'classifier_train', 'classifier_test'],
+                        choices=['feature', 'kmeans', 'kmeans_visual',
+                        'bag_of_words', 'classifier_train', 'classifier_test'],
                         help='Choose mode from k-means clustering, visualization and classification_training, classification_testing')
     parser.add_argument('--trained_kmeans_cluster', default=None,
        help='Previously trained kmeans clusters')
     parser.add_argument('--trained_hclusters', default=None,
         )
     parser.add_argument('--single_image', default=None, help='Input image path')
+    parser.add_argument('--single_image_label', default='*.pkl', help="Label for training or testing for single image input")
     parser.add_argument('--image_folder', default=None, help='Input image batch folder' )
+    parser.add_argument('--image_folder_label', default=None, help='Input image batch folder' )
     parser.add_argument('--image_format', required=True, default='.jpg', choices=['.jpg', '.png', '.tif', '.mat'],help='Input format')
     parser.add_argument('--save_intermediate', default=False, help='Whether or not to save the intermediate results')
     parser.add_argument('--dict_size', default= 40, help='Dictionary Size for KMeans')
@@ -33,6 +36,7 @@ if __name__ == '__main__':
     parser.add_argument('--bag_size', default=3600, help="Size of a bag (in a bag of words model)")
     parser.add_argument('--overlap_bag', default=2400, help='Overlapping pixels between bags')
     parser.add_argument('--ROI_csv', default=None, help='Input csv file for ROI tracking data')
+    parser.add_argument('--WSI_csv', default=None, help='Input csv file for WSI size by case ID')
     parser.add_argument('--classifier', default='logistic',
                         const='logistic',
                         nargs='?',
@@ -40,19 +44,21 @@ if __name__ == '__main__':
     parser.add_argument('--trained_model', default=None, help='previously trained model path')
     parser.add_argument('--lr', default=0.001, help='initial learning rate')
     parser.add_argument('--learning_rate', default='optimal', help='https://scikit-learn.org/0.15/modules/generated/sklearn.linear_model.SGDClassifier.html#sklearn.linear_model.SGDClassifier')
-    parser.add_argument('--help')
     args = parser.parse_args()
 
     mode = args.mode
     image_path = args.single_image
+    image_label_path = args.single_image_label
     folder_path = args.image_folder
+    folder_label_path = args.image_label_path
     ext = args.image_format
     save_flag = args.save_intermediate
     dict_size = args.dict_size
     histogram_bin = args.histogram_bin
     save_path = args.save_path
     word_size = args.word_size
-    csv_file = args.ROI_csv
+    roi_csv_file = args.ROI_csv
+    wsi_csv_file = args.WSI_csv
     bag_size = args.bag_size
     overlap = args.overlap_bag
     clf_filename = args.trained_model
@@ -137,11 +143,29 @@ if __name__ == '__main__':
     elif mode == 'k-means-visualization':
         # Not implemented
         print('Not implmentd yet')
+
+    elif mode == 'bag_of_words':
+        assert folder_path is not None, "Need to provide path to images"
+        kmeans_filename = os.path.join(save_path, 'kmeans.pkl')
+        hcluster_filename = os.path.join(save_path, 'hcluster.pkl')
+        assert os.path.exists(kmeans_filename) and os.path.exists(hcluster_filename), "Cannot find kmeans.pkl or hcluster.pkl"
+        loaded_kmeans = pickle.load(open(kmeans_filename, 'rb'))
+        loaded_hcluster = pickle.load(open(hcluster_filename, 'rb'))
+        im_list = glob.glob(os.path.join(folder_path, '*' + ext))
+        
     elif mode == 'classifier-train':
         assert save_path is not None and os.path.exists(save_path), "Feature/kmeans path is None or does not exist"
         assert folder_path is not None or image_path is not None, "Error: Input image path is None or save path is None."
         assert loaded_kmeans is not None, "Path incorrect/File doesnt exist"
-        assert csv_file is not None, "ROI tracking data not provided"
+
+        if clf_filename is None:
+            # initialize model
+            start = True
+            clf=model_init(args)
+            clf_filename = os.path.join(save_path, 'clf.pkl')
+        else:
+            clf=model_load(clf_filename)
+            start = False
 
         kmeans_filename = os.path.join(save_path, 'kmeans.pkl')
         hcluster_filename = os.path.join(save_path, 'hcluster.pkl')
@@ -149,66 +173,117 @@ if __name__ == '__main__':
         loaded_kmeans = pickle.load(open(kmeans_filename, 'rb'))
         loaded_hcluster = pickle.load(open(hcluster_filename, 'rb'))
 
-        if clf_filename is None:
-            # initialize model
-            clf = model_init()
-        else:
-            clf = model_load(clf_filename)
-
-        if image_path is not None:
-            # get filename without extension
-            base = os.path.basename(image_path)
-            path_noextend = os.path.splitext(base)[0]
-            caseID = int(''.join(filter(str.isdigit, path_noextend.split('_')[0])))
-            feat_outpath = os.path.join(save_path, path_noextend + '_feat_bag.pkl')
-            if not os.path.exists(feat_outpath):
-                bag_feat, bags = get_hist_from_image(image_path, loaded_kmeans,loaded_hcluster, dict_size, word_size, bag_size, overlap, save_flag, feat_outpath)
-            else:
-                if image_mat != 'mat':
-                    image = cv2.imread(image_path)
-                else:
-                    image,_ = load_mat(image_path)
-                bags = bag(image)
-                bag_feat = pickle.load(open(feat_outpath, 'rb'))
-            if csv_file is not None:
-                dict_bbox = preprocess_roi_csv(csv_file)
-                assert dict_bbox.get(caseID) is not None, "case ID does not exist: check image name convention"
-            label_bags = calculate_label_from_bbox(dict_bbox, caseID, bags.w, bags.length, 4)
-            clf = model_update(clf, bag_feat, label_bags)
+        if folder_path is not None:
+            pos_dir = os.path.join(sample_dir, 'pos')
+            pos_files = glob.glob(os.path.join(pos_dir, '*.tif'))
+            print('Number of positive samples: {}'.format(len(pos_files)))
+            neg_dir = os.path.join(sample_dir, 'neg')
+            neg_files = glob.glob(os.path.join(neg_dir, '*.tif'))
+            print('Number of negative samples: {}'.format(len(neg_files)))
+            while i < len(pos_files) or i < len(neg_files):
+                if i % 10 == 0:
+                    print("{} / {}".format(i, max(len(pos_files), len(neg_files))))
+                if i < len(pos_files):
+                    im_p = pos_files[i]
+                    bag_feat = get_hist_from_image(im_p, loaded_kmeans,
+                               loaded_hcluster, dict_size, word_size)
+                    clf = model_update(clf, [bag_feat], [1], start)
+                    if start:
+                        start = False
+                if i < len(neg_files):
+                    im_p = neg_files[i]
+                    bag_feat = get_hist_from_image(im_p, loaded_kmeans,
+                               loaded_hcluster, dict_size, word_size)
+                    clf = model_update(clf, [bag_feat], [0], start)
+                    if start:
+                        start = False
+                i += 1
             model_save(clf, clf_filename)
-        elif foler_path is not None:
-            assert ext == '.mat', "must provide .mat file for training"
-            print('-------Running Batch Job-------')
+        elif image_path is not None:
+            assert image_label_path is not None and os.path.exists(image_label_path), "Error: invalid label file"
 
-            im_list = sorted(glob.glob(os.path.join(folder_path, '*' + ext)), key=os.path.getsize)
-            dict_bbox = preprocess_roi_csv(csv_file)
+            print('Input training image: {}'.format(image_path))
+            image = cv2.imread(image_path)
+            image_label = pickle.load(open(image_label_path, 'rb'))
+            assert image is not None, "imread fail, check path"
+            image = np.array(image, dtype=int)
+            bags = Bag(img=image, size=bag_size,
+                       overlap_pixel=overlap, padded=True)
+            assert len(bags) == len(image_label), "Label and input length does not match"
+            for bag, i in bags:
+                bag_feat = get_hist_from_image(None, loaded_kmeans,
+                           loaded_hcluster, dict_size, word_size,
+                           image=bag)
+                clf = model_update(clf, [bag_feat], [label[i]], start=False)
+                model_save(clf, clf_filename)
 
-            count = 0
-            print('# of images: %r' %(len(im_list)))
+    elif mode == 'classifier-test':
+        assert save_path is not None and os.path.exists(save_path), "Feature/kmeans path is None or does not exist"
+        assert folder_path is not None or image_path is not None, "Error: Input image path is None or save path is None."
+        assert loaded_kmeans is not None, "Path incorrect/File doesnt exist"
+        assert csv_file is not None, "ROI tracking data not provided"
+        assert clf_filename is not None, "Error: invalid input model"
+        assert os.path.exists(clf_filename), "Error: invalid input model"
 
+        clf=model_load(clf_filename)
+
+        kmeans_filename = os.path.join(save_path, 'kmeans.pkl')
+        hcluster_filename = os.path.join(save_path, 'hcluster.pkl')
+        assert os.path.exists(kmeans_filename) and os.path.exists(hcluster_filename), "Cannot find kmeans.pkl or hcluster.pkl"
+        loaded_kmeans = pickle.load(open(kmeans_filename, 'rb'))
+        loaded_hcluster = pickle.load(open(hcluster_filename, 'rb'))
+
+        if folder_label_path is None:
+            # Calculate label
+            assert roi_csv_file is not None and os.path.exists(roi_csv_file), "ROI tracking data not provided"
+            assert wsi_csv_file is not None and os.path.exists(wsi_csv_file), "ROI tracking data not provided"
+            dict_bbox = preprocess_roi_csv(roi_csv)
+            dict_wsi_size = preprocess_wsi_size_csv(wsi_size_csv)
+            im_list = glob.glob(os.path.join(folder_path, '*' + ext))
             for im_p in im_list:
-                if count % 5 == 0: print('Processed %r / %r' %(count, len(im_list)))
-                count += 1
-                # get filename without extension
                 base = os.path.basename(im_p)
-                path_noextend = os.path.splitext(base)[0]
+                caseID = int(os.path.splitext(base)[0])
+                print('-------Processing: {}-------'.format(caseID))
+                label = calculate_label_from_roi_bbox(dict_bbox[caseID],                                  dict_wsi_size[caseID])
+                label_path = os.path.join(folder_path, '{}_label.pkl'.format(caseID))
+                pickle.dump(label_path, open(_path, 'wb'))
+                print("Wrote label file to {}".format(label_path))
+        else:
+            im_list = glob.glob(os.path.join(folder_path, '*' + ext))
+            metrics_list = [{'accuracy': 0, 'metrics':(0, 0, 0, 0)}]*len(im_list)
+            index = 0
+            for im_p in im_list:
+                base = os.path.basename(im_p)
+                caseID = int(os.path.splitext(base)[0])
+                l_p = os.path.join(folder_label_path, '{}_label.pkl'.format(caseID))
+                assert os.path.exists(l_p), "Did not find corresponding label file for {}".format(caseID)
+                print('-------Processing: {}-------'.format(caseID))
 
-                caseID = int(''.join(filter(str.isdigit, path_noextend.split('_')[0])))
-                feat_outpath = os.path.join(save_path, path_noextend + '_feat_bag.pkl')
+                image = cv2.imread(im_p)
+                image_label = pickle.load(open(l_p, 'rb'))
+                assert image is not None, "imread fail, check path"
+                image = np.array(image, dtype=int)
+                bags = Bag(img=image, size=bag_size,
+                           overlap_pixel=overlap, padded=True)
+                assert len(bags) == len(image_label), "Label and input length does not match"
+                result = np.zeros(len(bags))
+                for bag, i in bags:
+                    bag_feat = get_hist_from_image(None, loaded_kmeans,
+                               loaded_hcluster, dict_size, word_size,
+                               image=bag)
+                    result[i] = model_predict(clf, [bag_feat])
+                accuracy, metrics = model_report(result,
+                                                 image_label, train=False)
+                metrics_list[index]['accuracy'] = accuracy
+                metrics_list[index]['metrics'] = metrics
+                index += 1
 
-                pos_bags, labels_roi, [pos_count, neg_count] =
-                sample_from_roi_mat
-                (im_p)
-
-                if pos_count > neg_count:
-                    bags, negative_bags_ind, sample_negative_samples
-                    (pos_count-neg_count, bboxes, bags)
+            filename = save_path + '_test_result.pkl'
+            pickle.dump(metrics_list, open(filename, 'wb'))
 
 
 
-                bag_feat, bags = get_hist_from_image(bags,
-                   loaded_kmeans, loaded_hcluster, dict_size, word_size,
-                   feat_outpath)
+
 
 
 

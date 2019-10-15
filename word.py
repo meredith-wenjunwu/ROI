@@ -9,22 +9,28 @@ Created on Sun May 19 13:02:12 2019
 import math
 import cv2
 
+
 class Word:
     """
     Iterator Class for constructing the word (120x120 patch)
 
     """
-    def padding(self,img, window_size):
-        h,w,_ = img.shape
-        h_pad = window_size - h%window_size
-        w_pad = window_size - w%window_size
-        top = math.floor(h_pad/2)
-        bottom = math.ceil(h_pad/2)
-        left = math.floor(w_pad/2)
-        right = math.ceil(w_pad/2)
 
-        padded = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_REFLECT)
-        return padded
+    def padding(self, img, window_size):
+        h, w, _ = img.shape
+        h_pad = window_size - h % window_size if h % window_size != 0 else 0
+        w_pad = window_size - w % window_size if w % window_size != 0 else 0
+        top = math.floor(h_pad / 2)
+        bottom = math.ceil(h_pad / 2)
+        left = math.floor(w_pad / 2)
+        right = math.ceil(w_pad / 2)
+        if top != 0 and bottom != 0 and left != 0 and right != 0:
+            padded = cv2.copyMakeBorder(img, top, bottom,
+                                        left, right,
+                                        cv2.BORDER_REFLECT)
+            return padded
+        else:
+            return img
 
     def __init__(self, img, size=120):
         """
@@ -35,14 +41,14 @@ class Word:
 
         """
         padded = self.padding(img, size)
-        h,w,_ = padded.shape
-        assert h%size == 0, "height after padding is not divisible by 120"
-        assert w%size == 0, "width after padding is not divisible by 120"
+        h, w, _ = padded.shape
+        assert h % size == 0, "height after padding is not divisible by 120"
+        assert w % size == 0, "width after padding is not divisible by 120"
         self.img = padded
         self.size = size
         self.h = h
         self.w = w
-        self.length = int((self.h/size) * (self.w/size))
+        self.length = int((self.h / size) * (self.w / size))
 
     def __len__(self):
         """

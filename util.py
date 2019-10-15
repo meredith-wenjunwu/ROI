@@ -8,7 +8,8 @@ Created on Mon Jul  8 01:47:17 2019
 
 from bag import Bag
 from word import Word
-from feature import calculate_feature, get_histogram
+from feature import calculate_feature, get_histogram, get_histogram_cluster
+from cluster import predict_kmeans
 import numpy as np
 import os
 import glob
@@ -48,16 +49,15 @@ def get_feat_from_image(image_path, save_flag, word_size,
     return result
 
 
-def get_hist_from_image(bags, kmeans, hclusters, dict_size, word_size,
-                        save_path):
-    result = np.zeros([bags.length, dict_size])
-    for bag, i in bags:
-        feat_words = get_feat_from_image(None, False, word_size, image=bag)
-        cluster_words = predict_kmeans(feat_words, kmeans, h_cluster=hclusters)
-        hist_bag = get_histogram(cluster_words, nbins=dict_size)
-        result[i, :] = hist_bag
-    pickle.dump(result, open(save_path, 'wb'))
-    return result, bags
+def get_hist_from_image(image_path, kmeans, hclusters, dict_size, word_size,
+                        image=None):
+    if image is None:
+        feat_words = get_feat_from_image(image_path, False, word_size)
+    else:
+        feat_words = get_feat_from_image(None, False, word_size, image=image)
+    cluster_words = predict_kmeans(feat_words, kmeans, h_cluster=hclusters)
+    hist_bag = get_histogram_cluster(cluster_words, dict_size=dict_size)
+    return hist_bag
 
 
 def load_mat(filename):
@@ -118,7 +118,7 @@ def preprocess_roi_csv(csv_file):
             i += 1
     return result
 
-def preprocess_roi_size_csv(csv_file):
+def preprocess_wsi_size_csv(csv_file):
     f = pd.read_csv(csv_file)
     caseID = f['Case ID']
     H = f['H']
@@ -166,22 +166,46 @@ def bound_box(idx, w, length, size, overlap_pixel):
     return [box_h, box_h + size, box_w, box_w + size]
 
 
-def calculate_label_from_bbox(dict_bbox, case_ID, w, length, factor, size=3600, overlap_pixel=2400):
-    bboxes = dict_bbox[case_ID]
-    result = np.zeros(length)
-    for i in range(1, length):
-        bb = bound_box(i, w, length, size, overlap_pixel)
-        for bbox in bboxes:
-            bbox = [int(x / 4) for x in bbox]
+def calculate_label_from_roi_bbox(roi_bbox, wsi_size, factor=1,
+                                  size=3600, overlap_pixel=2400):
 
-            # if bb[0] >= bbox[0] and bb[1] <= bbox[1] and bb[2] >= bbox[2] and bb[3] <= bbox[3]:
-            # if row overlaps
-            if (bb[1] <= bbox[1] and bb[1] >= bbox[0]) or (bb[0] >= bbox[0] and bb[0] <= bbox[1]):
-                # if col overlaps
-                if (bb[3] <= bbox[3] and bb[3] >= bbox[2]) or (bb[2] >= bbox[2] and bb[2] <= bbox[3]):
-                    result[i] = 1
-                break
+    bags = Bag(h=wsi_size[0], w=wsi_size[1],
+               size=size, overlap_pixel=overlap_pixel,
+               padded=True)
+
+    h, w = bags.h, bags.w
+    pos_ind = set()
+    num_bag_w = int(math.floor((w - overlap_pixel) / (size - overlap_pixel)))
+    num_bag_h = int(math.floor((h - overlap_pixel) / (size - overlap_pixel)))
+    # Bounding box(int[]): [h_low, h_high, w_low, w_high]
+    for h_low, h_high, w_low, w_high in roi_bbox:
+        h_low += bags.top
+        h_high += bags.top
+        w_low += bags.left
+        w_high += bags.left
+        #if h_high >= h and w_high >= w:
+        if h_high > h or w_high > w:
+            print("Size incompatible for case: {}".format(self.caseID))
+            print("Bounding box: {}, {}, {}, {}".format(h_low, h_high, w_low, w_high))
+            print("WSI size: {}, {}". format(h, w))
+            h_high = min(h, h_high)
+            w_high = min(w, w_high)
+        ind_w_low = int(max(math.floor((w_low - size) / (size - overlap_pixel) +
+           1), 0))
+        ind_w_high = int(min(max(math.floor(w_high / (size - overlap_pixel)),
+           0), num_bag_w - 1))
+        ind_h_low = int(max(math.floor((h_low - size) / (size - overlap_pixel) +
+           1), 0))
+        ind_h_high = int(min(max(math.floor(h_high / (size - overlap_pixel)),
+            0), num_bag_h - 1))
+        for i in range(h_low, h_high+1):
+            pos_ind.update(range(ind_h_low * num_bag_w + ind_w_low,
+               ind_h_high * num_bag_w + ind_w_high + 1))
+    pos_ind = np.sort(list(pos_ind))
+    result = np.zeros(len(bags))
+    result[pos_ind] = 1
     return result
+
 
 
 def biggest_bbox(bbox_list):
@@ -243,21 +267,20 @@ class ROI_Sampler:
 
     def __init__(self, roi_mat, caseID, window_size,
                  overlap, outdir, wsi_path=None,
-                 roi_csv=None, roi_size_csv=None,
-                 dict_bbox=None, dict_roi_size=None):
-        assert os.path.exists(roi_mat), "ROI mat file do not exist"
+                 roi_csv=None, wsi_size_csv=None,
+                 dict_bbox=None, dict_wsi_size=None):
         self.roi_mat = roi_mat
         if not os.path.exists(outdir):
             os.mkdir(outdir)
         if dict_bbox is None:
             assert os.path.exists(roi_csv), "ROI csv file do not exist"
             self.dict_bbox = preprocess_roi_csv(roi_csv)
-        if dict_roi_size is None:
-            assert os.path.exists(roi_size_csv), "ROI size csv file do not exist"
-            self.dict_roi_size = preprocess_roi_size_csv(roi_size_csv)
+        if dict_wsi_size is None:
+            assert os.path.exists(wsi_size_csv), "ROI size csv file do not exist"
+            self.dict_wsi_size = preprocess_wsi_size_csv(wsi_size_csv)
         self.bboxes = self.dict_bbox[caseID]
         self.caseID = caseID
-        self.wsi_size = self.dict_roi_size[caseID]
+        self.wsi_size = self.dict_wsi_size[caseID]
         self.wsi_path = wsi_path
         self.window_size = window_size
         self.overlap = overlap
@@ -270,6 +293,7 @@ class ROI_Sampler:
         #self.negdir = os.path.join(self.outdir, 'neg')
 
     def sample_pos(self):
+        assert os.path.exists(self.roi_mat), "ROI mat file do not exist"
         self.negdir = os.path.join(self.outdir, 'neg')
         if not os.path.exists(self.negdir): os.mkdir(self.negdir)
         self.posdir = os.path.join(self.outdir, 'pos')
@@ -331,9 +355,10 @@ class ROI_Sampler:
                 cv2.imwrite(os.path.join(self.posdir, str(self.caseID) + '_' +
                    str(pos_count) + '.tif'), bag)
             else:
-                neg_count += 1
-                cv2.imwrite(os.path.join(self.negdir, str(self.caseID) + '_'
-                    + str(neg_count) + '.tif'), bag)
+                if neg_count < pos_count:
+                    neg_count += 1
+                    cv2.imwrite(os.path.join(self.negdir, str(self.caseID) + '_'
+                       + str(neg_count) + '.tif'), bag)
 
         return bags, result, [pos_count, neg_count]
 
@@ -360,15 +385,27 @@ class ROI_Sampler:
         h, w = WSI_size
         result = set()
         num_bag_w = int(math.floor((w - overlap) / (window_size - overlap)))
+        num_bag_h = int(math.floor((h - overlap) / (window_size - overlap)))
         # Bounding box(int[]): [h_low, h_high, w_low, w_high]
         for h_low, h_high, w_low, w_high in bboxes:
-            assert h_high <= h and w_high <= w, "Size incompatible"
-            ind_w_low = int(max(math.ceil((w_low - window_size) / (window_size - overlap)), 0))
-            ind_w_high = int(max(math.ceil((w_high - window_size) / (window_size - overlap)), 0))
-            ind_h_low = int(max(math.ceil((h_low - window_size) / (window_size - overlap)), 0))
-            ind_h_high = int(max(math.ceil((h_high - window_size) / (window_size - overlap)), 0))
+            #if h_high >= h and w_high >= w:
+            if h_high > h or w_high > w:
+                print("Size incompatible for case: {}".format(self.caseID))
+                print("Bounding box: {}, {}, {}, {}".format(h_low, h_high, w_low, w_high))
+                print("WSI size: {}, {}". format(h, w))
+                h_high = min(h, h_high)
+                w_high = min(w, w_high)
+            ind_w_low = int(max(math.floor((w_low - window_size) / (window_size
+               - overlap) + 1), 0))
+            ind_w_high = int(min(max(math.floor(w_high / (window_size -
+                overlap)), 0), num_bag_w))
+            ind_h_low = int(max(math.floor((h_low - window_size) / (window_size
+               - overlap) + 1), 0))
+            ind_h_high = int(min(max(math.floor(h_high / 
+                (window_size - overlap)), 0), num_bag_h))
             for i in range(h_low, h_high+1):
-                result.update(range(ind_h_low * num_bag_w + ind_w_low, ind_h_low * num_bag_w + ind_w_high + 1))
+                result.update(range(ind_h_low * num_bag_w + ind_w_low,
+                   ind_h_high * num_bag_w + ind_w_high + 1))
         return np.sort(list(result))
 
 
@@ -381,7 +418,8 @@ class ROI_Sampler:
             Args:
                 bboxes (List(n)): list of bounding boxes of a given image
                 WSI_size [h (int), w (int)]: size of the WSI (height, width)
-                roi_bags (List(m)): list with the index of bags that are contained
+                roi_bags (List(m)): list with the index of roi bags that are
+                contained
                                     in the ROI (Result from
                                     bbox_to_bags_ind_in_wsi)
                 window size (int): size of word/bags or any window of interest
@@ -412,7 +450,7 @@ class ROI_Sampler:
             result.update(neigh)
             roi_bags = np.concatenate([roi_bags, neigh])
             #roi_bags.extend(neigh)
-            i += len(neigh)
+            i += 1
             assert i < len(roi_bags), "ROI too big, not enough negative sample"
         print(result)
         return list(result)
@@ -425,13 +463,13 @@ class ROI_Sampler:
     def _ROI_neighbor_not_roi(self, idx, num_bag_w, roi_bags, length):
         result = []
         if self._checkROI(idx + 1, length, roi_bags):
-            result += [idx + 1]
+            result += [int(idx + 1)]
         if self._checkROI(idx - 1, length, roi_bags):
-            result += [idx - 1]
+            result += [int(idx - 1)]
         if self._checkROI(idx - num_bag_w, length, roi_bags):
-            result += [idx - num_bag_w]
+            result += [int(idx - num_bag_w)]
         if self._checkROI(idx + num_bag_w, length, roi_bags):
-            result += [idx + num_bag_w]
+            result += [int(idx + num_bag_w)]
         return result
 
 
@@ -453,7 +491,7 @@ class ROI_Sampler:
             sample_row = set(range(bb[0], bb[1]))
             intersect_row = sample_row.intersection(roi_row)
 
-            if len(intersect_list) > 0:
+            if len(intersect_row) > 0:
                 # if col overlaps
                 roi_col = range(bbox[2], bbox[3])
                 sample_col = set(range(bb[2], bb[3]))

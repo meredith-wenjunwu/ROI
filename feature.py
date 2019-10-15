@@ -119,4 +119,7 @@ def get_histogram(features, nbins=64):
     
     
     return result
-    
+
+def get_histogram_cluster(cluster_words, dict_size=40):
+    hist, edges_ = np.histogram(cluster_words, range=(0, 40), bins=dict_size)
+    return hist
