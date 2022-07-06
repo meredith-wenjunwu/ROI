@@ -1,5 +1,5 @@
 h5py==2.8.0
-html5lib==0.9999999
+html5lib==0.999999999
 matplotlib==2.2.2
 numpy==1.14.3
 opencv-python==4.1.0.25
